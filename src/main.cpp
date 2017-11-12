@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -196,7 +197,16 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  // USER CODE
+
+  int lane = 1; // 0 = left, 1 = middle, 2 = right
+
+  double ref_vel = 0;
+
+  // END USER CODE
+
+
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -238,8 +248,164 @@ int main() {
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
+            // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+            int prev_size = previous_path_x.size();
+
+            // Plan trajectory from the end of the current trajectory
+            if (prev_size > 0)
+            {
+                car_s = end_path_s;
+            }
+
+            // Check if we are too close to any cars (in our lane)
+            double max_speed = 49.5;
+            for (int i = 0; i < sensor_fusion.size(); i++)
+            {
+                // Check if this car is in our lane
+                float d = sensor_fusion[i][6];
+                if ((2 + 4 * lane - 2) < d && d < (2 + 4 * lane + 2))
+                {
+                    // Calculate speed of other car
+                    double vx = sensor_fusion[i][3];
+                    double vy = sensor_fusion[i][4];
+                    double check_speed = sqrt(vx*vx + vy*vy);
+
+                    // Predict position of car at point in time that we are planning from (in the future)
+                    double check_car_s = sensor_fusion[i][5];
+                    check_car_s += ((double)prev_size * 0.02 * check_speed);
+
+                    // Check if we will be too close to the car
+                    if ((check_car_s > car_s) && ((check_car_s - car_s) < 30))
+                    {
+                        // Set flag to say that we need to slow down
+                        max_speed = std::min(max_speed, check_speed);
+
+                        // Change into left lane (if we aren't there already)
+                        if (lane > 0)
+                        {
+                            lane = 0;
+                        }
+                    }
+                }
+            }
+
+            // Choose acceleration based on whether we are too close to a car in front
+            if (ref_vel > max_speed)
+            {
+                ref_vel -= 0.224;
+            }
+            else if (ref_vel < max_speed)
+            {
+                ref_vel += 0.224;
+            }
+
+            // Define sparse waypoints (30m apart) used to construct spline trajectory
+            vector<double> ptsx, ptsy;
+
+            // Reference starting point for car
+            double ref_x, ref_y, ref_yaw;
+            
+            // Check if we have a previous trajectory to work from
+            if (prev_size < 2)
+            {
+                // Not enough points to work from so use current car state to define first two points for spline
+                ref_x = car_x;
+                ref_y = car_y;
+                ref_yaw = deg2rad(car_yaw);
+
+                // Calculate previous position based on current heading of car
+                double prev_car_x = car_x - cos(car_yaw);
+                double prev_car_y = car_y - sin(car_yaw);
+
+                ptsx.push_back(prev_car_x);
+                ptsx.push_back(car_x);
+
+                ptsy.push_back(prev_car_y);
+                ptsy.push_back(car_y);
+            }
+            else
+            {
+                // Use existing trajectory to define first two points for spline
+                ref_x = previous_path_x[prev_size - 1];
+                ref_y = previous_path_y[prev_size - 1];
+                
+                double ref_x_prev = previous_path_x[prev_size - 2];
+                double ref_y_prev = previous_path_y[prev_size - 2];
+                
+                // Calculate reference yaw based on last two points in trajectory
+                ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+                ptsx.push_back(ref_x_prev);
+                ptsx.push_back(ref_x);
+
+                ptsy.push_back(ref_y_prev);
+                ptsy.push_back(ref_y);
+            }
+
+            // Add 3 more points to spline, spaced 30m apart
+            double dist_inc = 30;
+            for(int i=0; i<3; i++)
+            {
+                // Use Frenet coordinates
+                double next_s = car_s + (i + 1) * dist_inc;
+                double next_d = 2 + 4 * lane;
+
+                // Convert to cartesian coordinates
+                vector<double> xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+                ptsx.push_back(xy[0]);
+                ptsy.push_back(xy[1]);
+            }
+
+            // Convert all waypoints into vehicle frame of reference
+            for (int i = 0; i < ptsx.size(); i++)
+            {
+                double shift_x = ptsx[i] - ref_x;
+                double shift_y = ptsy[i] - ref_y;
+
+                ptsx[i] =  shift_x * cos(ref_yaw) + shift_y * sin(ref_yaw);
+                ptsy[i] = -shift_x * sin(ref_yaw) + shift_y * cos(ref_yaw);
+            }
+
+            // Construct spline from waypoints
+            tk::spline s;
+            s.set_points(ptsx, ptsy);
+
+            // Keep existing trajectory
+            for (int i = 0; i < prev_size; i++)
+            {
+                next_x_vals.push_back(previous_path_x[i]);
+                next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            // Add new trajectory points using spline
+            double target_x = 30;
+            double target_y = s(target_x);
+            double target_dist = sqrt(target_x*target_x + target_y*target_y);
+
+            // Calculate distance between waypoints
+            double N = target_dist / (0.02 * ref_vel / 2.24); // 2.24 m/s to mph
+            
+            double x_addon = 0;
+            for (int i = 0; i < 50 - prev_size; i++)
+            {
+                // Move along spline by calculated distance
+                x_addon += target_x / N;
+
+                double x_point = x_addon;
+                double y_point = s(x_point);
+
+                // Convert into world coordinate frame
+                double x_point_world = ref_x + x_point * cos(ref_yaw) - y_point * sin(ref_yaw);
+                double y_point_world = ref_y + x_point * sin(ref_yaw) + y_point * cos(ref_yaw);
+
+                next_x_vals.push_back(x_point_world);
+                next_y_vals.push_back(y_point_world);
+            }
+            
+            // END USER CODE
+
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
