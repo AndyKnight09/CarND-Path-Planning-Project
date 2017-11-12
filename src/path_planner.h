@@ -33,11 +33,13 @@ public:
 
 public:
     void UpdateTrajectory(MeasurementData & data, vector<double> & next_x_vals, vector<double> & next_y_vals);
+    double CalculateLaneSpeed(int lane, const MeasurementData & data, int prev_size);
+    bool CanMoveIntoLane(int lane, const MeasurementData & data, int prev_size);
 
 private:
     const Tools & tools;
 
-    int lane;
+    int ref_lane;
     double ref_vel;
 };
 
