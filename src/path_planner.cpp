@@ -14,6 +14,17 @@ PathPlanner::~PathPlanner()
 
 void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next_x_vals, vector<double> & next_y_vals)
 {
+    const double MPS_TO_MPH             = 2.23694;  // Conversion between m/s and mph
+    const double MPH_TO_MPS             = 1 / MPS_TO_MPH;
+
+    const double TARGET_SPEED           = 49.5;     // mph
+    const double MAX_ACCELERATION       = 5.0;      // m/s^2
+    const double DT                     = 0.02;     // Time step (s)
+    const double LANE_WIDTH             = 4.0;      // m
+    const double CAR_WIDTH              = 3.0;      // m
+    const double MIN_DIST_TO_CAR_INFRONT = 30.0;    // m
+    const int NUM_TRAJECTORY_POINTS     = 50;
+
     int prev_size = data.previous_path_x.size();
 
     // Plan trajectory from the end of the current trajectory
@@ -23,12 +34,12 @@ void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next
     }
 
     // Check if we are too close to any cars (in our lane)
-    double max_speed = 49.5;
+    double max_speed = TARGET_SPEED;
     for (int i = 0; i < data.sensor_fusion.size(); i++)
     {
         // Check if this car is in our lane
         float d = data.sensor_fusion[i][6];
-        if ((2 + 4 * lane - 2) < d && d < (2 + 4 * lane + 2))
+        if ((LANE_WIDTH / 2 + LANE_WIDTH * lane - CAR_WIDTH / 2) < d && d < (LANE_WIDTH / 2 + LANE_WIDTH * lane + CAR_WIDTH / 2))
         {
             // Calculate speed of other car
             double vx = data.sensor_fusion[i][3];
@@ -37,31 +48,36 @@ void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next
 
             // Predict position of car at point in time that we are planning from (in the future)
             double check_car_s = data.sensor_fusion[i][5];
-            check_car_s += ((double)prev_size * 0.02 * check_speed);
+            check_car_s += ((double)prev_size * DT * check_speed);
 
             // Check if we will be too close to the car
-            if ((check_car_s > data.car_s) && ((check_car_s - data.car_s) < 30))
+            if ((check_car_s > data.car_s) && ((check_car_s - data.car_s) < MIN_DIST_TO_CAR_INFRONT))
             {
                 // Set flag to say that we need to slow down
                 max_speed = fmin(max_speed, check_speed);
-
-                // Change into left lane (if we aren't there already)
-                if (lane > 0)
-                {
-                    lane = 0;
-                }
             }
+        }
+    }
+
+    // See if we need to change lane
+    if (max_speed < TARGET_SPEED)
+    {
+        // Change into left lane (if we aren't there already)
+        if (lane > 0)
+        {
+            lane = 0;
+            max_speed = TARGET_SPEED;
         }
     }
 
     // Choose acceleration based on whether we are too close to a car in front
     if (ref_vel > max_speed)
     {
-        ref_vel -= 0.224;
+        ref_vel -= MAX_ACCELERATION * DT * MPS_TO_MPH;
     }
     else if (ref_vel < max_speed)
     {
-        ref_vel += 0.224;
+        ref_vel += MAX_ACCELERATION * DT * MPS_TO_MPH;
     }
 
     // Define sparse waypoints (30m apart) used to construct spline trajectory
@@ -109,11 +125,11 @@ void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next
 
     // Add 3 more points to spline, spaced 30m apart
     double dist_inc = 30;
-    for (int i = 0; i<3; i++)
+    for (int i = 0; i < 3; i++)
     {
         // Use Frenet coordinates
         double next_s = data.car_s + (i + 1) * dist_inc;
-        double next_d = 2 + 4 * lane;
+        double next_d = LANE_WIDTH / 2 + LANE_WIDTH * lane;
 
         // Convert to cartesian coordinates
         vector<double> xy = tools.getXY(next_s, next_d);
@@ -136,7 +152,7 @@ void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next
     tk::spline s;
     s.set_points(ptsx, ptsy);
 
-    // Keep existing trajectory
+    // Start from existing trajectory
     for (int i = 0; i < prev_size; i++)
     {
         next_x_vals.push_back(data.previous_path_x[i]);
@@ -149,10 +165,10 @@ void PathPlanner::UpdateTrajectory(MeasurementData & data, vector<double> & next
     double target_dist = sqrt(target_x*target_x + target_y*target_y);
 
     // Calculate distance between waypoints
-    double N = target_dist / (0.02 * ref_vel / 2.24); // 2.24 m/s to mph
+    double N = target_dist / (DT * ref_vel * MPH_TO_MPS);
 
     double x_addon = 0;
-    for (int i = 0; i < 50 - prev_size; i++)
+    for (int i = 0; i < NUM_TRAJECTORY_POINTS - prev_size; i++)
     {
         // Move along spline by calculated distance
         x_addon += target_x / N;
