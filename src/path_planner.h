@@ -33,7 +33,7 @@ enum State
     LaneChangeLeft,
     LaneChangeRight,
     PrepareLaneChangeLeft,
-    PrepareLaneChangeRIght
+    PrepareLaneChangeRight
 };
 
 class PathPlanner
@@ -44,10 +44,15 @@ public:
 
 public:
     void UpdateTrajectory(MeasurementData & data, vector<double> & next_x_vals, vector<double> & next_y_vals);
+    
+private:
     void DetermineNextAction();
     double CalculateLaneSpeed(int lane);
+    double CalculateDistanceToNextCar(int lane);
     bool CanMoveIntoLane(int lane);
     void CalculateTrajectory(vector<double> & next_x_vals, vector<double> & next_y_vals);
+    double GetLaneD(int lane);
+    void UpdateState(State newState);
 
 private:
     const Tools & tools;
