@@ -54,7 +54,7 @@ void PathPlanner::UpdateTrajectory(MeasurementData & latest_data, vector<double>
 void PathPlanner::DetermineNextAction()
 {
     // Check if we are too close to any cars (in our lane)
-    target_vel = CalculateLaneSpeed(ref_lane);
+    target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
 
     // Different behaviour based on current state
     switch (state)
@@ -67,11 +67,11 @@ void PathPlanner::DetermineNextAction()
                 // Check options
                 if (ref_lane == LEFT_LANE)
                 {
-                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE);
-                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE);
+                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_FOLLOW_DISTANCE);
+                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_FOLLOW_DISTANCE);
                     if (middle_lane_speed > target_vel || right_lane_speed > target_vel)
                     {
-                        if (CanMoveIntoLane(MIDDLE_LANE))
+                        if (CanMoveIntoLane(MIDDLE_LANE, MIN_LANE_CHANGE_GAP))
                         {
                             UpdateState(LaneChangeRight);
                             ref_lane = MIDDLE_LANE;
@@ -85,11 +85,11 @@ void PathPlanner::DetermineNextAction()
                 }
                 else if (ref_lane == RIGHT_LANE)
                 {
-                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE);
-                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE);
+                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_FOLLOW_DISTANCE);
+                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_FOLLOW_DISTANCE);
                     if (middle_lane_speed > target_vel || left_lane_speed > target_vel)
                     {
-                        if (CanMoveIntoLane(MIDDLE_LANE))
+                        if (CanMoveIntoLane(MIDDLE_LANE, MIN_LANE_CHANGE_GAP))
                         {
                             UpdateState(LaneChangeLeft);
                             ref_lane = MIDDLE_LANE;
@@ -104,10 +104,10 @@ void PathPlanner::DetermineNextAction()
                 else // Middle lane
                 {
                     // Can move into either left or right lane
-                    bool can_move_into_left_lane = CanMoveIntoLane(LEFT_LANE);
-                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE);
-                    bool can_move_into_right_lane = CanMoveIntoLane(RIGHT_LANE);
-                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE);
+                    bool can_move_into_left_lane = CanMoveIntoLane(LEFT_LANE, MIN_LANE_CHANGE_GAP);
+                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_FOLLOW_DISTANCE);
+                    bool can_move_into_right_lane = CanMoveIntoLane(RIGHT_LANE, MIN_LANE_CHANGE_GAP);
+                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_FOLLOW_DISTANCE);
                     if (can_move_into_left_lane && can_move_into_right_lane)
                     {
                         if (left_lane_speed > right_lane_speed)
@@ -172,20 +172,32 @@ void PathPlanner::DetermineNextAction()
 
         case LaneChangeLeft:
         {
-            // Wait for lane change to complete before attempting another manoeuvre
-            if (fabs(data.car_d - GetLaneD(ref_lane)) < LANE_WIDTH / 10)
+            // Wait for lane change to complete before starting next manoeuvre
+            if(fabs(data.car_d - GetLaneD(ref_lane)) < LANE_WIDTH / 10)
             {
+                // Lane change complete
                 UpdateState(KeepLane);
+            }
+            else
+            {
+                // Adjust speed based on current lane position
+                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_FOLLOW_DISTANCE));
             }
         }
         break;
         
         case LaneChangeRight:
         {
-            // Wait for lane change to complete before attempting another manoeuvre
+            // Wait for lane change to complete before starting next manoeuvre
             if (fabs(data.car_d - GetLaneD(ref_lane)) < LANE_WIDTH / 10)
             {
+                // Lane change complete
                 UpdateState(KeepLane);
+            }
+            else
+            {
+                // Adjust speed based on current lane position
+                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_FOLLOW_DISTANCE));
             }
         }
         break;
@@ -193,17 +205,17 @@ void PathPlanner::DetermineNextAction()
         case PrepareLaneChangeLeft: 
         {
             // Slot in behind vehicle in lane to the left
-            if (CanMoveIntoLane(ref_lane - 1))
+            if (CanMoveIntoLane(ref_lane - 1, MIN_LANE_CHANGE_GAP))
             {
                 // Switch lane
                 UpdateState(LaneChangeLeft);
                 ref_lane -= 1;
-                target_vel = CalculateLaneSpeed(ref_lane);
+                target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
             }
             else
             {
                 // Slow down to find a gap
-                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane - 1) - 5);
+                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane - 1, MIN_LANE_CHANGE_GAP) - 5);
             }
         }
         break;
@@ -211,31 +223,36 @@ void PathPlanner::DetermineNextAction()
         case PrepareLaneChangeRight: 
         {
             // Slot in behind vehicle in lane to the right
-            if (CanMoveIntoLane(ref_lane + 1))
+            if (CanMoveIntoLane(ref_lane + 1, MIN_LANE_CHANGE_GAP))
             {
                 // Switch lane
                 UpdateState(LaneChangeRight);
                 ref_lane += 1;
-                target_vel = CalculateLaneSpeed(ref_lane);
+                target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
             }
             else
             {
                 // Slow down to find a gap
-                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane + 1) - 5);
+                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane + 1, MIN_LANE_CHANGE_GAP) - 5);
             }
         }
         break;
     }
 }
 
-double PathPlanner::CalculateLaneSpeed(int lane)
+double PathPlanner::CalculateLaneSpeed(int lane, double gap_size)
 {
-    double lane_speed = TARGET_TOP_SPEED;
+    return CalculateCarSpeed(LANE_WIDTH / 2 + LANE_WIDTH * lane, gap_size);
+}
+
+double PathPlanner::CalculateCarSpeed(double d, double gap_size)
+{
+    double speed = TARGET_TOP_SPEED;
     for (int i = 0; i < data.sensor_fusion.size(); i++)
     {
         // Check if this car is in our lane
-        float d = data.sensor_fusion[i][6];
-        if ((LANE_WIDTH / 2 + LANE_WIDTH * lane - CAR_WIDTH / 2) < d && d < (LANE_WIDTH / 2 + LANE_WIDTH * lane + CAR_WIDTH / 2))
+        float check_d = data.sensor_fusion[i][6];
+        if ((d - CAR_WIDTH / 2) < check_d && check_d < (d + CAR_WIDTH / 2))
         {
             // Calculate speed of other car
             double vx = data.sensor_fusion[i][3];
@@ -246,15 +263,16 @@ double PathPlanner::CalculateLaneSpeed(int lane)
             double check_car_s = data.sensor_fusion[i][5];
             check_car_s += ((double)data.prev_size() * DT * check_speed);
 
-            // Check if we will be too close to the car
-            if ((check_car_s > data.car_s) && ((check_car_s - data.car_s) < MIN_FOLLOW_DISTANCE))
+            // Check if car is near to us
+            double diff_s = check_car_s - data.car_s;
+            if ((diff_s > (MIN_FOLLOW_DISTANCE - gap_size)) && (diff_s < MIN_FOLLOW_DISTANCE))
             {
                 // See if this car is slower
-                lane_speed = fmin(lane_speed, check_speed * MPS_TO_MPH);
+                speed = fmin(speed, check_speed * MPS_TO_MPH);
             }
         }
     }
-    return lane_speed;
+    return speed;
 }
 
 double PathPlanner::CalculateDistanceToNextCar(int lane)
@@ -287,7 +305,7 @@ double PathPlanner::CalculateDistanceToNextCar(int lane)
     return distance;
 }
 
-bool PathPlanner::CanMoveIntoLane(int lane)
+bool PathPlanner::CanMoveIntoLane(int lane, double gap_size)
 {
     for (int i = 0; i < data.sensor_fusion.size(); i++)
     {
@@ -304,8 +322,9 @@ bool PathPlanner::CanMoveIntoLane(int lane)
             double check_car_s = data.sensor_fusion[i][5];
             check_car_s += ((double)data.prev_size() * DT * check_speed);
 
-            // Check if we will be too close to the car
-            if (((check_car_s - data.car_s) > (MIN_FOLLOW_DISTANCE - MIN_LANE_CHANGE_GAP)) && ((check_car_s - data.car_s) < MIN_FOLLOW_DISTANCE))
+            // Check if car is within lane change gap
+            double diff_s = check_car_s - data.car_s;
+            if ((diff_s > (MIN_FOLLOW_DISTANCE - gap_size)) && (diff_s < MIN_FOLLOW_DISTANCE))
             {
                 return false;
             }

@@ -47,9 +47,10 @@ public:
     
 private:
     void DetermineNextAction();
-    double CalculateLaneSpeed(int lane);
+    double CalculateCarSpeed(double d, double gap_size);
+    double CalculateLaneSpeed(int lane, double gap_size);
     double CalculateDistanceToNextCar(int lane);
-    bool CanMoveIntoLane(int lane);
+    bool CanMoveIntoLane(int lane, double gap_size);
     void CalculateTrajectory(vector<double> & next_x_vals, vector<double> & next_y_vals);
     double GetLaneD(int lane);
     void UpdateState(State newState);
