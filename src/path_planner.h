@@ -47,13 +47,15 @@ public:
     
 private:
     void DetermineNextAction();
-    double CalculateCarSpeed(double d, double gap_size);
-    double CalculateLaneSpeed(int lane, double gap_size);
+    bool ShouldChangeLane(double predictedLaneSpeed);
+    double CalculateLaneSpeed(int lane, double follow_distance, double gap_size);
+    double CalculateCarSpeed(double d, double follow_distance, double gap_size);
     double CalculateDistanceToNextCar(int lane);
+    double CalculateSpeedOfNextCar(int lane);
     bool CanMoveIntoLane(int lane, double gap_size);
     void CalculateTrajectory(vector<double> & next_x_vals, vector<double> & next_y_vals);
     double GetLaneD(int lane);
-    void UpdateState(State newState);
+    void UpdateState(State newState, const char * format, ...);
 
 private:
     const Tools & tools;

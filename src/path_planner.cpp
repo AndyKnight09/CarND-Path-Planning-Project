@@ -2,6 +2,7 @@
 #include "spline.h"
 
 #include <float.h>
+#include <cstdarg>
 
 #define MPS_TO_MPH 2.23694  // Conversion between m/s and mph
 #define MPH_TO_MPS (1 / MPS_TO_MPH)
@@ -15,15 +16,17 @@
 #define MAX_ACCELERATION 7.5 // m/s^2
 #define LANE_WIDTH 4.0 // m
 #define CAR_WIDTH 3.0 // m
-#define MIN_FOLLOW_DISTANCE 20.0 // m
-#define MIN_LANE_CHANGE_GAP 30.0 // m
+#define MIN_KEEP_LANE_FOLLOW_DISTANCE 15.0 // m
+#define MIN_LANE_CHANGE_FOLLOW_DISTANCE 7.5 // m
+#define MIN_LANE_CHANGE_GAP 20.0 // m
 #define NUM_TRAJECTORY_POINTS 50
+#define MIN_LANE_CHANGE_SPEED_INCREASE 5.0 // m/s
 
 PathPlanner::PathPlanner(const Tools & tools)
     : tools(tools)
 {
     // Start stationary in the middle lane
-    UpdateState(KeepLane);
+    UpdateState(KeepLane, "Initialisation");
     target_vel = TARGET_TOP_SPEED;
     ref_vel = 0;
     ref_lane = MIDDLE_LANE;
@@ -54,7 +57,7 @@ void PathPlanner::UpdateTrajectory(MeasurementData & latest_data, vector<double>
 void PathPlanner::DetermineNextAction()
 {
     // Check if we are too close to any cars (in our lane)
-    target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
+    target_vel = CalculateLaneSpeed(ref_lane, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_KEEP_LANE_FOLLOW_DISTANCE);
 
     // Different behaviour based on current state
     switch (state)
@@ -67,37 +70,45 @@ void PathPlanner::DetermineNextAction()
                 // Check options
                 if (ref_lane == LEFT_LANE)
                 {
-                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_FOLLOW_DISTANCE);
-                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_FOLLOW_DISTANCE);
-                    if (middle_lane_speed > target_vel || right_lane_speed > target_vel)
+                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
+                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
+                    if (ShouldChangeLane(middle_lane_speed) || ShouldChangeLane(right_lane_speed))
                     {
                         if (CanMoveIntoLane(MIDDLE_LANE, MIN_LANE_CHANGE_GAP))
                         {
-                            UpdateState(LaneChangeRight);
+                            UpdateState(LaneChangeRight, "Current = %.1fm/s, Middle [OK] = %.1fm/s, Right = %.1fm/s", target_vel, middle_lane_speed, right_lane_speed);
                             ref_lane = MIDDLE_LANE;
                             target_vel = middle_lane_speed;
                         }
                         else
                         {
-                            UpdateState(PrepareLaneChangeRight);
+                            double next_middle_speed = CalculateSpeedOfNextCar(MIDDLE_LANE);
+                            if (ShouldChangeLane(next_middle_speed))
+                            {
+                                UpdateState(PrepareLaneChangeRight, "Current = %.1fm/s, Middle [BUSY] = %.1fm/s / %.1fm/s, Right = %.1fm/s", target_vel, middle_lane_speed, next_middle_speed, right_lane_speed);
+                            }
                         }
                     }
                 }
                 else if (ref_lane == RIGHT_LANE)
                 {
-                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_FOLLOW_DISTANCE);
-                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_FOLLOW_DISTANCE);
-                    if (middle_lane_speed > target_vel || left_lane_speed > target_vel)
+                    double middle_lane_speed = CalculateLaneSpeed(MIDDLE_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
+                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
+                    if (ShouldChangeLane(middle_lane_speed) || ShouldChangeLane(left_lane_speed))
                     {
                         if (CanMoveIntoLane(MIDDLE_LANE, MIN_LANE_CHANGE_GAP))
                         {
-                            UpdateState(LaneChangeLeft);
+                            UpdateState(LaneChangeLeft, "Current = %.1fm/s, Middle [OK] = %.1fm/s, Left = %.1fm/s", target_vel, middle_lane_speed, left_lane_speed);
                             ref_lane = MIDDLE_LANE;
                             target_vel = middle_lane_speed;
                         }
                         else
                         {
-                            UpdateState(PrepareLaneChangeLeft);
+                            double next_middle_speed = CalculateSpeedOfNextCar(MIDDLE_LANE);
+                            if (ShouldChangeLane(CalculateSpeedOfNextCar(MIDDLE_LANE)))
+                            {
+                                UpdateState(PrepareLaneChangeLeft, "Current = %.1fm/s, Middle [BUSY] = %.1fm/s / %.1fm/s, Left = %.1fm/s", target_vel, middle_lane_speed, next_middle_speed, left_lane_speed);
+                            }
                         }
                     }
                 }
@@ -105,65 +116,68 @@ void PathPlanner::DetermineNextAction()
                 {
                     // Can move into either left or right lane
                     bool can_move_into_left_lane = CanMoveIntoLane(LEFT_LANE, MIN_LANE_CHANGE_GAP);
-                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_FOLLOW_DISTANCE);
+                    double left_lane_speed = CalculateLaneSpeed(LEFT_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
                     bool can_move_into_right_lane = CanMoveIntoLane(RIGHT_LANE, MIN_LANE_CHANGE_GAP);
-                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_FOLLOW_DISTANCE);
+                    double right_lane_speed = CalculateLaneSpeed(RIGHT_LANE, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP);
                     if (can_move_into_left_lane && can_move_into_right_lane)
                     {
                         if (left_lane_speed > right_lane_speed)
                         {
-                            if (left_lane_speed > target_vel)
+                            if (ShouldChangeLane(left_lane_speed))
                             {
-                                UpdateState(LaneChangeLeft);
+                                UpdateState(LaneChangeLeft, "Current = %.1fm/s, Left [OK] = %.1fm/s, Right [OK] = %.1fm/s", target_vel, left_lane_speed, right_lane_speed);
                                 ref_lane = LEFT_LANE;
                                 target_vel = left_lane_speed;
                             }
                         }
                         else if (right_lane_speed > left_lane_speed)
                         {
-                            if (right_lane_speed > target_vel)
+                            if (ShouldChangeLane(right_lane_speed))
                             {
-                                UpdateState(LaneChangeRight);
+                                UpdateState(LaneChangeRight, "Current = %.1fm/s, Left [OK] = %.1fm/s, Right [OK] = %.1fm/s", target_vel, left_lane_speed, right_lane_speed);
                                 ref_lane = RIGHT_LANE;
                                 target_vel = right_lane_speed;
                             }
                         }
                         else // Both lane speeds are the same
                         {
-                            if (left_lane_speed > target_vel)
+                            // If either lane is better than the current one
+                            if (ShouldChangeLane(left_lane_speed))
                             {
                                 // Work out which lane has the furthest gap to the next car
-                                if (CalculateDistanceToNextCar(LEFT_LANE) > CalculateDistanceToNextCar(RIGHT_LANE))
+                                double distance_to_left_car = CalculateDistanceToNextCar(LEFT_LANE);
+                                double distance_to_right_car = CalculateDistanceToNextCar(RIGHT_LANE);
+                                if (distance_to_left_car > distance_to_right_car)
                                 {
-                                    UpdateState(LaneChangeLeft);
+                                    UpdateState(LaneChangeLeft, "Current = %.1fm/s, Left [OK] = %.1fm/s / %.1fm, Right [OK] = %.1fm/s / %.1fm", target_vel, left_lane_speed, distance_to_left_car, right_lane_speed, distance_to_right_car);
                                     ref_lane = LEFT_LANE;
                                     target_vel = left_lane_speed;
                                 }
                                 else
                                 {
-                                    UpdateState(LaneChangeRight);
+                                    UpdateState(LaneChangeRight, "Current = %.1fm/s, Left [OK] = %.1fm/s / %.1fm, Right [OK] = %.1fm/s / %.1fm", target_vel, left_lane_speed, distance_to_left_car, right_lane_speed, distance_to_right_car);
                                     ref_lane = RIGHT_LANE;
                                     target_vel = right_lane_speed;
                                 }
                             }
                         }
                     }
-                    else if (can_move_into_left_lane && left_lane_speed > target_vel)
+                    else if (can_move_into_left_lane && ShouldChangeLane(left_lane_speed))
                     {
-                        UpdateState(LaneChangeLeft);
+                        UpdateState(LaneChangeLeft, "Current = %.1fm/s, Left [OK] = %.1fm/s, Right [BUSY] = %.1fm/s", target_vel, left_lane_speed, right_lane_speed);
                         ref_lane = LEFT_LANE;
                         target_vel = left_lane_speed;
                     }
-                    else if (can_move_into_right_lane && right_lane_speed > target_vel)
+                    else if (can_move_into_right_lane && ShouldChangeLane(right_lane_speed))
                     {
-                        UpdateState(LaneChangeRight);
+                        UpdateState(LaneChangeRight, "Current = %.1fm/s, Left [BUSY] = %.1fm/s, Right [OK] = %.1fm/s", target_vel, left_lane_speed, right_lane_speed);
                         ref_lane = RIGHT_LANE;
                         target_vel = right_lane_speed;
                     }
                     else
                     {
                         // Stay where we are - no better options (in the short term at least)
-                        UpdateState(KeepLane);
+                        UpdateState(KeepLane, "Current = %.1fm/s, Left [???] = %.1fm/s, Right [???] = %.1fm/s", target_vel, left_lane_speed, right_lane_speed);
                     }
                 }
             }
@@ -176,12 +190,12 @@ void PathPlanner::DetermineNextAction()
             if(fabs(data.car_d - GetLaneD(ref_lane)) < LANE_WIDTH / 10)
             {
                 // Lane change complete
-                UpdateState(KeepLane);
+                UpdateState(KeepLane, "Lane change complete");
             }
             else
             {
                 // Adjust speed based on current lane position
-                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_FOLLOW_DISTANCE));
+                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_LANE_CHANGE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_FOLLOW_DISTANCE));
             }
         }
         break;
@@ -192,12 +206,12 @@ void PathPlanner::DetermineNextAction()
             if (fabs(data.car_d - GetLaneD(ref_lane)) < LANE_WIDTH / 10)
             {
                 // Lane change complete
-                UpdateState(KeepLane);
+                UpdateState(KeepLane, "Lane change complete");
             }
             else
             {
                 // Adjust speed based on current lane position
-                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_FOLLOW_DISTANCE));
+                target_vel = min(target_vel, CalculateCarSpeed(data.car_d, MIN_LANE_CHANGE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_FOLLOW_DISTANCE));
             }
         }
         break;
@@ -208,14 +222,14 @@ void PathPlanner::DetermineNextAction()
             if (CanMoveIntoLane(ref_lane - 1, MIN_LANE_CHANGE_GAP))
             {
                 // Switch lane
-                UpdateState(LaneChangeLeft);
+                UpdateState(LaneChangeLeft, "Can move into lane");
                 ref_lane -= 1;
-                target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
+                target_vel = CalculateLaneSpeed(ref_lane, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_KEEP_LANE_FOLLOW_DISTANCE);
             }
             else
             {
                 // Slow down to find a gap
-                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane - 1, MIN_LANE_CHANGE_GAP) - 5);
+                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane - 1, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP) - 5);
             }
         }
         break;
@@ -226,26 +240,31 @@ void PathPlanner::DetermineNextAction()
             if (CanMoveIntoLane(ref_lane + 1, MIN_LANE_CHANGE_GAP))
             {
                 // Switch lane
-                UpdateState(LaneChangeRight);
+                UpdateState(LaneChangeRight, "Can move into lane");
                 ref_lane += 1;
-                target_vel = CalculateLaneSpeed(ref_lane, MIN_FOLLOW_DISTANCE);
+                target_vel = CalculateLaneSpeed(ref_lane, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_KEEP_LANE_FOLLOW_DISTANCE);
             }
             else
             {
                 // Slow down to find a gap
-                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane + 1, MIN_LANE_CHANGE_GAP) - 5);
+                target_vel = min(target_vel, CalculateLaneSpeed(ref_lane + 1, MIN_KEEP_LANE_FOLLOW_DISTANCE, MIN_LANE_CHANGE_GAP) - 5);
             }
         }
         break;
     }
 }
 
-double PathPlanner::CalculateLaneSpeed(int lane, double gap_size)
+bool PathPlanner::ShouldChangeLane(double predictedLaneSpeed)
 {
-    return CalculateCarSpeed(LANE_WIDTH / 2 + LANE_WIDTH * lane, gap_size);
+    return predictedLaneSpeed > (target_vel + MIN_LANE_CHANGE_SPEED_INCREASE);
 }
 
-double PathPlanner::CalculateCarSpeed(double d, double gap_size)
+double PathPlanner::CalculateLaneSpeed(int lane, double follow_distance, double gap_size)
+{
+    return CalculateCarSpeed(LANE_WIDTH / 2 + LANE_WIDTH * lane, follow_distance, gap_size);
+}
+
+double PathPlanner::CalculateCarSpeed(double d, double follow_distance, double gap_size)
 {
     double speed = TARGET_TOP_SPEED;
     for (int i = 0; i < data.sensor_fusion.size(); i++)
@@ -257,18 +276,18 @@ double PathPlanner::CalculateCarSpeed(double d, double gap_size)
             // Calculate speed of other car
             double vx = data.sensor_fusion[i][3];
             double vy = data.sensor_fusion[i][4];
-            double check_speed = sqrt(vx*vx + vy*vy);
+            double check_car_speed = sqrt(vx*vx + vy*vy);
 
             // Predict position of car at point in time that we are planning from (in the future)
             double check_car_s = data.sensor_fusion[i][5];
-            check_car_s += ((double)data.prev_size() * DT * check_speed);
+            check_car_s += ((double)data.prev_size() * DT * check_car_speed);
 
             // Check if car is near to us
             double diff_s = check_car_s - data.car_s;
-            if ((diff_s > (MIN_FOLLOW_DISTANCE - gap_size)) && (diff_s < MIN_FOLLOW_DISTANCE))
+            if ((diff_s > (follow_distance - gap_size)) && (diff_s < follow_distance))
             {
                 // See if this car is slower
-                speed = fmin(speed, check_speed * MPS_TO_MPH);
+                speed = fmin(speed, check_car_speed * MPS_TO_MPH);
             }
         }
     }
@@ -277,7 +296,7 @@ double PathPlanner::CalculateCarSpeed(double d, double gap_size)
 
 double PathPlanner::CalculateDistanceToNextCar(int lane)
 {
-    double distance = DBL_MAX;
+    double min_distance = 10000.0;
     for (int i = 0; i < data.sensor_fusion.size(); i++)
     {
         // Check if this car is in our lane
@@ -287,22 +306,52 @@ double PathPlanner::CalculateDistanceToNextCar(int lane)
             // Calculate speed of other car
             double vx = data.sensor_fusion[i][3];
             double vy = data.sensor_fusion[i][4];
-            double check_speed = sqrt(vx*vx + vy*vy);
+            double check_car_speed = sqrt(vx*vx + vy*vy);
 
             // Predict position of car at point in time that we are planning from (in the future)
             double check_car_s = data.sensor_fusion[i][5];
-            check_car_s += ((double)data.prev_size() * DT * check_speed);
+            check_car_s += ((double)data.prev_size() * DT * check_car_speed);
 
-            // Check if we will be too close to the car
+            // Check if this car is in front of us and closer than any other cars seen so far
             double distance_to_car = check_car_s - data.car_s;
-            if (distance_to_car > 0)
+            if (0 < distance_to_car && distance_to_car < min_distance)
             {
-                // See if this car is the next car we will meet
-                distance = fmin(distance, distance_to_car);
+                min_distance = distance_to_car;
             }
         }
     }
-    return distance;
+    return min_distance;
+}
+
+double PathPlanner::CalculateSpeedOfNextCar(int lane)
+{
+    double min_distance = 10000.0;
+    double speed = TARGET_TOP_SPEED;
+    for (int i = 0; i < data.sensor_fusion.size(); i++)
+    {
+        // Check if this car is in our lane
+        float d = data.sensor_fusion[i][6];
+        if ((LANE_WIDTH / 2 + LANE_WIDTH * lane - CAR_WIDTH / 2) < d && d < (LANE_WIDTH / 2 + LANE_WIDTH * lane + CAR_WIDTH / 2))
+        {
+            // Calculate speed of other car
+            double vx = data.sensor_fusion[i][3];
+            double vy = data.sensor_fusion[i][4];
+            double check_car_speed = sqrt(vx*vx + vy*vy);
+
+            // Predict position of car at point in time that we are planning from (in the future)
+            double check_car_s = data.sensor_fusion[i][5];
+            check_car_s += ((double)data.prev_size() * DT * check_car_speed);
+
+            // Check if this car is in front of us and closer than any other cars seen so far
+            double distance_to_car = check_car_s - data.car_s;
+            if (0 < distance_to_car && distance_to_car < min_distance)
+            {
+                min_distance = distance_to_car;
+                speed = check_car_speed;
+            }
+        }
+    }
+    return speed;
 }
 
 bool PathPlanner::CanMoveIntoLane(int lane, double gap_size)
@@ -324,7 +373,7 @@ bool PathPlanner::CanMoveIntoLane(int lane, double gap_size)
 
             // Check if car is within lane change gap
             double diff_s = check_car_s - data.car_s;
-            if ((diff_s > (MIN_FOLLOW_DISTANCE - gap_size)) && (diff_s < MIN_FOLLOW_DISTANCE))
+            if ((diff_s > (MIN_KEEP_LANE_FOLLOW_DISTANCE - gap_size)) && (diff_s < MIN_KEEP_LANE_FOLLOW_DISTANCE))
             {
                 return false;
             }
@@ -449,18 +498,31 @@ double PathPlanner::GetLaneD(int lane)
     return LANE_WIDTH / 2 + LANE_WIDTH * lane;
 }
 
-void PathPlanner::UpdateState(State newState)
+void PathPlanner::UpdateState(State newState, const char * format, ...)
 {
     if (state != newState)
     {
         state = newState;
+
+        // Display state change
         switch (state)
         {
-            case KeepLane: cout << "State = KeepLane" << endl; break;
-            case LaneChangeLeft: cout << "State = LaneChangeLeft" << endl; break;
-            case LaneChangeRight: cout << "State = LaneChangeRight" << endl; break;
-            case PrepareLaneChangeLeft: cout << "State = PrepareLaneCangeLeft" << endl; break;
-            case PrepareLaneChangeRight: cout << "State = PrepareLaneCangeRight" << endl; break;
+            case KeepLane: cout << "State -> KeepLane"; break;
+            case LaneChangeLeft: cout << "State -> LaneChangeLeft"; break;
+            case LaneChangeRight: cout << "State -> LaneChangeRight"; break;
+            case PrepareLaneChangeLeft: cout << "State -> PrepareLaneCangeLeft"; break;
+            case PrepareLaneChangeRight: cout << "State -> PrepareLaneCangeRight"; break;
         }
+
+        // Display custom message
+        va_list args;
+        va_start(args, format);
+
+        char message[1024];
+        vsprintf(message, format, args);
+
+        cout << " - " << message << endl;
+
+        va_end(args);
     }
 }
