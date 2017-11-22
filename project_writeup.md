@@ -98,7 +98,9 @@ For each state there are rules to govern the target speed and lane for the car a
 * If there isn't enough space then prepare for the lane change by dropping back until we find a gap to change into.
 * If we have the option of changing into two lanes and both are currently clear then move into the one which the biggest gap ahead to the next vehicle.
 
-I found that with these rules in place the vehicle behaved in a sensible manner in most situations and was able to drive around the highway changing lanes as required for around 20 miles (at which point another driver changed lanes and crashed into the side of me). [Here](./LongRun.png) is a screenshot showing this result.
+I found that with these rules in place the vehicle behaved in a sensible manner in most situations and was able to drive around the highway changing lanes as required for around 36 miles (at which point another driver changed lanes and crashed into the side of me). Below is a screenshot showing this result:
+
+![Long Run](./LongRun.png)
 
 ##### Improvements
 
