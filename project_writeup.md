@@ -102,10 +102,12 @@ I found that with these rules in place the vehicle behaved in a sensible manner 
 
 ![Long Run](./LongRun.png)
 
+There are a number of parameters used for these rules which are defined at the top of [path_planner.h](./src/path_planner.h).
+
 ##### Improvements
 
-There are a couple of improvements that would be worth investigating:
+There are a number of improvements that would be worth investigating:
 
-* Instead of just using position or velocity to decide whether to change lanes should instead calculate how far we can travel in the next X seconds for each option and choose the one with the biggest value.
-* Should check for cars changing lanes when determining car speed - currently only consider velocity in s-direction, not d-direction.
-* Should have some logic in place to bail out of a manoeuvre if things go bad. At the moment once we decide to do something that is the end of that and we will do it regardless. For instance if preparing to change lane and then cars keep stacking up in the lane we want to change into. In this case we will keep dropping further and further back whereas we might be better to abandon the lane change and keep in our lane.
+* Instead of just using position or velocity to decide whether to change lanes should instead calculate how far we can travel in the next X seconds for each option and choose the option that will progress the car the furthest.
+* Check for cars changing lanes when looking for collisions - currently I only consider velocity in s-direction, not d-direction.
+* Add some logic to bail out of a manoeuvre if it isn't working as planned. At the moment once we decide to do something that is the end of that and we will do it regardless. For instance if preparing to change lane and then cars keep stacking up in the lane we want to change into. In this case we will keep dropping further and further back whereas we might be better to abandon the lane change and keep in our lane.
